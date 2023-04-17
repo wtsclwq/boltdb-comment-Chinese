@@ -71,7 +71,7 @@ func (p *page) leafPageElement(index uint16) *leafPageElement {
 		leafPageElementSize, int(index)))
 }
 
-// leafPageElements retrieves a list of leaf nodes.
+// leafPageElements retrieves a list of leaf nodes.(获取p上的leaf-elem数组)
 func (p *page) leafPageElements() []leafPageElement {
 	if p.count == 0 {
 		return nil
@@ -82,7 +82,7 @@ func (p *page) leafPageElements() []leafPageElement {
 	return elems
 }
 
-// branchPageElement retrieves the branch node by index
+// branchPageElement retrieves the branch node by index(根据index获取p上指定的branch-elem指针)
 func (p *page) branchPageElement(index uint16) *branchPageElement {
 	return (*branchPageElement)(unsafeIndex(unsafe.Pointer(p), unsafe.Sizeof(*p),
 		unsafe.Sizeof(branchPageElement{}), int(index)))
@@ -102,7 +102,10 @@ func (p *page) branchPageElements() []branchPageElement {
 // dump writes n bytes of the page to STDERR as hex output.
 func (p *page) hexdump(n int) {
 	buf := unsafeByteSlice(unsafe.Pointer(p), 0, 0, n)
-	fmt.Fprintf(os.Stderr, "%x\n", buf)
+	_, err := fmt.Fprintf(os.Stderr, "%x\n", buf)
+	if err != nil {
+		return
+	}
 }
 
 type pages []*page
@@ -112,26 +115,30 @@ func (s pages) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s pages) Less(i, j int) bool { return s[i].id < s[j].id }
 
 // branchPageElement represents a node on a branch page.
+// branch-page的布局：[page-header] + [branch-elem-1,branch-elem-2...branch-elem-n] + [key-1,key-2...key-n]
 type branchPageElement struct {
-	pos   uint32
-	ksize uint32
-	pgid  pgid
+	pos   uint32 // 当前branch elem指向的child page的所有key中，最小的key的偏移量
+	ksize uint32 // 当前branch elem指向的key的size
+	pgid  pgid   // 当前branch elem指向的page(可能是branch-page或者leaf-page)
 }
 
 // key returns a byte slice of the node key.
+// 获取最小key的字节数组
 func (n *branchPageElement) key() []byte {
 	return unsafeByteSlice(unsafe.Pointer(n), 0, int(n.pos), int(n.pos)+int(n.ksize))
 }
 
 // leafPageElement represents a node on a leaf page.
+// branch-page的布局：[page-header] + [leaf-elem-1,leaf-elem-2...leaf-elem-n] + [key-1,val-1,key-2,val-2...key-n,val-n]
 type leafPageElement struct {
-	flags uint32
-	pos   uint32
-	ksize uint32
-	vsize uint32
+	flags uint32 // 标记当前leaf-elem是否是一个嵌套的sub-bucket
+	pos   uint32 // 当前leaf elem指向的<key,val>的偏移量
+	ksize uint32 // 当前leaf elem指向的key的size
+	vsize uint32 // 当前leaf elem指向的val的size
 }
 
 // key returns a byte slice of the node key.
+// 获取key的字节数组
 func (n *leafPageElement) key() []byte {
 	i := int(n.pos)
 	j := i + int(n.ksize)
@@ -139,6 +146,7 @@ func (n *leafPageElement) key() []byte {
 }
 
 // value returns a byte slice of the node value.
+// 获取value的字节数组
 func (n *leafPageElement) value() []byte {
 	i := int(n.pos) + int(n.ksize)
 	j := i + int(n.vsize)

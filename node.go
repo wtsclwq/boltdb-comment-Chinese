@@ -8,16 +8,17 @@ import (
 )
 
 // node represents an in-memory, deserialized page.
+// 前面的字段其实相当于header,inodes字段相当于data
 type node struct {
-	bucket     *Bucket
-	isLeaf     bool
-	unbalanced bool
-	spilled    bool
-	key        []byte
-	pgid       pgid
-	parent     *node
-	children   nodes
-	inodes     inodes
+	bucket     *Bucket // 当前node关联的bucket
+	isLeaf     bool    // 是否是leaf-node
+	unbalanced bool    // 是否不平衡，如果为true则考虑merge
+	spilled    bool    // 是否需要分裂，如果true则考虑split
+	key        []byte  // 最小key的字节数组
+	pgid       pgid    // 所属page id
+	parent     *node   // 父节点指针
+	children   nodes   // 对于branch-node,其所有的孩子节点指针,对于leaf-node无效
+	inodes     inodes  // 当前node保存的索引数据，branch-node就是key array,leaf-node就是key array + val array
 }
 
 // root returns the top-level node this node is attached to.
@@ -158,19 +159,24 @@ func (n *node) del(key []byte) {
 }
 
 // read initializes the node from a page.
+// 根据leaf-page或者branch-page，加载node到内存
 func (n *node) read(p *page) {
 	n.pgid = p.id
-	n.isLeaf = ((p.flags & leafPageFlag) != 0)
+	n.isLeaf = (p.flags & leafPageFlag) != 0
+	// 每个inode对应page中的一个branch(leaf) elem和key (val)
 	n.inodes = make(inodes, int(p.count))
 
+	// 遍历page中的每一个elem，这里的count不会大于65535,因为在创建b+tree时如果大于就会split
 	for i := 0; i < int(p.count); i++ {
 		inode := &n.inodes[i]
 		if n.isLeaf {
+			// leaf-page的第i个elem
 			elem := p.leafPageElement(uint16(i))
 			inode.flags = elem.flags
 			inode.key = elem.key()
 			inode.value = elem.value()
 		} else {
+			// branch-page的第i个elem
 			elem := p.branchPageElement(uint16(i))
 			inode.pgid = elem.pgid
 			inode.key = elem.key()
@@ -178,7 +184,8 @@ func (n *node) read(p *page) {
 		_assert(len(inode.key) > 0, "read: zero-length inode key")
 	}
 
-	// Save first key so we can find the node in the parent when we spill.
+	// Save first key, so we can find the node in the parent when we spill.
+	// 将最小key存储在node中，用来实现b+tree的split操作
 	if len(n.inodes) > 0 {
 		n.key = n.inodes[0].key
 		_assert(len(n.key) > 0, "read: zero-length node key")
@@ -188,6 +195,7 @@ func (n *node) read(p *page) {
 }
 
 // write writes the items onto one or more pages.
+// 将node转换为page，用来做持久化
 func (n *node) write(p *page) {
 	// Initialize page.
 	if n.isLeaf {
@@ -196,6 +204,7 @@ func (n *node) write(p *page) {
 		p.flags |= branchPageFlag
 	}
 
+	// inode的数量不会大于65535,因为如果有溢出的情况会会进行split
 	if len(n.inodes) >= 0xFFFF {
 		panic(fmt.Sprintf("inode overflow: %d (pgid=%d)", len(n.inodes), p.id))
 	}
@@ -206,26 +215,33 @@ func (n *node) write(p *page) {
 		return
 	}
 
-	// Loop over each item and write it to the page.
+	// Loop over each item and write it to the page.(遍历所有的inode)
 	// off tracks the offset into p of the start of the next data.
+	// off初始化为page中，越过page-header和elem域的第一个地址，因为对于leaf-page或者branch-page,
+	// 其布局为 [page-header] + [elems * count] + [data(key or <key val>) * count]
 	off := unsafe.Sizeof(*p) + n.pageElementSize()*uintptr(len(n.inodes))
 	for i, item := range n.inodes {
 		_assert(len(item.key) > 0, "write: zero-length inode key")
 
 		// Create a slice to write into of needed size and advance
 		// byte pointer for next iteration.
+		// 对于branch-inode,len(item.value) == 0
 		sz := len(item.key) + len(item.value)
+		// 在off地址处构建一个slice,向其中写入数据
 		b := unsafeByteSlice(unsafe.Pointer(p), off, 0, sz)
+		// 更新off
 		off += uintptr(sz)
 
 		// Write the page element.
 		if n.isLeaf {
+			// 写入leaf-elem
 			elem := p.leafPageElement(uint16(i))
 			elem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))
 			elem.flags = item.flags
 			elem.ksize = uint32(len(item.key))
 			elem.vsize = uint32(len(item.value))
 		} else {
+			// 写入branch-elem
 			elem := p.branchPageElement(uint16(i))
 			elem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))
 			elem.ksize = uint32(len(item.key))
@@ -589,13 +605,20 @@ func (s nodes) Less(i, j int) bool {
 	return bytes.Compare(s[i].inodes[0].key, s[j].inodes[0].key) == -1
 }
 
-// inode represents an internal node inside of a node.
+// inode represents an internal node inside a node.
 // It can be used to point to elements in a page or point
 // to an element which hasn't been added to a page yet.
+// 具体的索引数据项，每个node都有其对应的page.count个，用来保存branch-page或者leaf-page的data域的elem和key (val)
+// 对于branch-node来说就是其中的一个(key,page-id,key)三元组
+// 对于leaf-node来说就是其中的一个(key,value)二元组
 type inode struct {
+	// 标记当前leaf-inode是否是一个嵌套的sub-bucket
 	flags uint32
-	pgid  pgid
-	key   []byte
+	// 当inode为分支元素时，pgid才有值，为叶子元素时，则没值
+	pgid pgid
+	// key的字节数组
+	key []byte
+	// 当inode为分支元素时，value为空，为叶子元素时，才有值
 	value []byte
 }
 
