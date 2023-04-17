@@ -322,7 +322,7 @@ func (db *DB) loadFreelist() {
 			// Read free list from freelist page.
 			db.freelist.read(db.page(db.meta().freelist))
 		}
-		db.stats.FreePageN = db.freelist.free_count()
+		db.stats.FreePageN = db.freelist.freeCount()
 	})
 }
 
@@ -660,7 +660,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 
 // freePages releases any pages associated with closed read-only transactions.
 func (db *DB) freePages() {
-	// Free all pending pages prior to earliest open transaction.
+	// Free all pending pages prior to the earliest open transaction.
 	sort.Sort(txsById(db.txs))
 	minid := txid(0xFFFFFFFFFFFFFFFF)
 	if len(db.txs) > 0 {

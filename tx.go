@@ -293,8 +293,8 @@ func (tx *Tx) close() {
 	}
 	if tx.writable {
 		// Grab freelist stats.
-		var freelistFreeN = tx.db.freelist.free_count()
-		var freelistPendingN = tx.db.freelist.pending_count()
+		var freelistFreeN = tx.db.freelist.freeCount()
+		var freelistPendingN = tx.db.freelist.pendingCount()
 		var freelistAlloc = tx.db.freelist.size()
 
 		// Remove transaction ref & writer lock.
@@ -421,7 +421,7 @@ func (tx *Tx) check(ch chan error) {
 	// Check if any pages are double freed.
 	freed := make(map[pgid]bool)
 	all := make([]pgid, tx.db.freelist.count())
-	tx.db.freelist.copyall(all)
+	tx.db.freelist.copyAll(all)
 	for _, id := range all {
 		if freed[id] {
 			ch <- fmt.Errorf("page %d: already freed", id)

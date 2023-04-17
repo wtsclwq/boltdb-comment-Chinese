@@ -173,6 +173,7 @@ func (a pgids) merge(b pgids) pgids {
 	return merged
 }
 
+// 将a和b按照有序合并成到dst中，a和b有序
 // mergepgids copies the sorted union of a and b into dst.
 // If dst is too small, it panics.
 func mergepgids(dst, a, b pgids) {
