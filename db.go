@@ -1169,16 +1169,17 @@ type Info struct {
 	PageSize int
 }
 
+// 每个boltdb的文件的第一个page是一个mate page,用来标记当前db文件的一些元信息
 type meta struct {
-	magic    uint32
-	version  uint32
-	pageSize uint32
-	flags    uint32
-	root     bucket
-	freelist pgid
-	pgid     pgid
-	txid     txid
-	checksum uint64
+	magic    uint32 //一个固定的 32 位随机数，用来确定该文件是一个 Bolt 数据库文件(另一种文件起始位置拥有相同数据的可能性极低)
+	version  uint32 //表明该文件所属的 Bolt 版本，便于日后做兼容与迁移
+	pageSize uint32 //page页的大小，该值和操作系统默认的页大小保持一致
+	flags    uint32 //保留值，目前貌似还没用到
+	root     bucket //Bolt实例所有索引和原数据被组织成一个树形结构，root就是根节点
+	freelist pgid   //空闲列表页的id,bolt删除数据时可能出现富余的空间，这些空间的信息会被记录在 freelist 中备用
+	pgid     pgid   //下一个要被分配的 page 的 id，取值大于已分配的所有 pages 的 id
+	txid     txid   //下一个要被分配的事务 id。事务 id 单调递增，可以被理解为事务执行的逻辑时间
+	checksum uint64 //用作校验的校验和
 }
 
 // validate checks the marker bytes and version of the meta page to ensure it matches this binary.
@@ -1193,38 +1194,40 @@ func (m *meta) validate() error {
 	return nil
 }
 
-// copy copies one meta object to another.
+// copy copies one meta-object to another.
 func (m *meta) copy(dest *meta) {
 	*dest = *m
 }
 
-// write writes the meta onto a page.
+// write writes the meta onto a page.(将元信息写入到meta-page的data区域，meta-page布局：page-header + meta-data)
 func (m *meta) write(p *page) {
 	if m.root.root >= m.pgid {
+		// root bucket的page id大于即将被分配的page id,逻辑错误
 		panic(fmt.Sprintf("root bucket pgid (%d) above high water mark (%d)", m.root.root, m.pgid))
 	} else if m.freelist >= m.pgid && m.freelist != pgidNoFreelist {
 		// TODO: reject pgidNoFreeList if !NoFreelistSync
+		// freelist的page id大于即将被分配的page id,逻辑错误
 		panic(fmt.Sprintf("freelist pgid (%d) above high water mark (%d)", m.freelist, m.pgid))
 	}
 
 	// Page id is either going to be 0 or 1 which we can determine by the transaction ID.
-	p.id = pgid(m.txid % 2)
-	p.flags |= metaPageFlag
+	p.id = pgid(m.txid % 2) // 根据事务id,决定操作0号meta-page还是1号meta-page
+	p.flags |= metaPageFlag // 设置p为meta-page
 
 	// Calculate the checksum.
-	m.checksum = m.sum64()
+	m.checksum = m.sum64() // 初始化校验和
 
-	m.copy(p.meta())
+	m.copy(p.meta()) // 将元信息写入到p的meta-data域，详见page::meta()方法
 }
 
-// generates the checksum for the meta.
+// generates the checksum for the meta.(根据m的字段信息计算一个校验和并返回)
 func (m *meta) sum64() uint64 {
 	var h = fnv.New64a()
 	_, _ = h.Write((*[unsafe.Offsetof(meta{}.checksum)]byte)(unsafe.Pointer(m))[:])
 	return h.Sum64()
 }
 
-// _assert will panic with a given formatted message if the given condition is false.
+// _assert will panic with a given formatted message if the given condition is false. (封装一个简单的assert)
 func _assert(condition bool, msg string, v ...interface{}) {
 	if !condition {
 		panic(fmt.Sprintf("assertion failed: "+msg, v...))

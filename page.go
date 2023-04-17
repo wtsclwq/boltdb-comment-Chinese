@@ -7,34 +7,37 @@ import (
 	"unsafe"
 )
 
+// page header的大小，原版bolt还有额外的ptr字段，因此使用了
+// int(unsafe.Offsetof(((*page)(nil)).ptr))这种更加Tricky的方法
 const pageHeaderSize = unsafe.Sizeof(page{})
 
-const minKeysPerPage = 2
+const minKeysPerPage = 2 // 每个page最少具有2个key
 
-const branchPageElementSize = unsafe.Sizeof(branchPageElement{})
-const leafPageElementSize = unsafe.Sizeof(leafPageElement{})
+const branchPageElementSize = unsafe.Sizeof(branchPageElement{}) // b+tree inner-page中element的大小
+const leafPageElementSize = unsafe.Sizeof(leafPageElement{})     // b+tree leaf-node中element的大小
 
 const (
-	branchPageFlag   = 0x01
-	leafPageFlag     = 0x02
-	metaPageFlag     = 0x04
-	freelistPageFlag = 0x10
+	branchPageFlag   = 0x01 // 表示page是一个inner-page
+	leafPageFlag     = 0x02 // 表示page是一个leaf-page
+	metaPageFlag     = 0x04 // 表示page是一个mate-page
+	freelistPageFlag = 0x10 // 表示page是一个freelist-page
 )
 
 const (
-	bucketLeafFlag = 0x01
+	bucketLeafFlag = 0x01 // 表示leaf-page-element是一个嵌套的sub-bucket
 )
 
 type pgid uint64
 
+// page header信息，每一个物理page的布局都是page header + data
 type page struct {
-	id       pgid
-	flags    uint16
-	count    uint16
-	overflow uint32
+	id       pgid   // page id
+	flags    uint16 // page的类型，在上方有定义：branch page、leaf page、mate page、freelist page
+	count    uint16 // 个数 2字节，统计叶子节点、非叶子节点、空闲列表页的个数
+	overflow uint32 // 4字节，数据是否有溢出，主要在空闲列表上有用
 }
 
-// typ returns a human readable page type string used for debugging.
+// typ returns a human-readable page type string used for debugging.(返回类型string)
 func (p *page) typ() string {
 	if (p.flags & branchPageFlag) != 0 {
 		return "branch"
@@ -48,13 +51,22 @@ func (p *page) typ() string {
 	return fmt.Sprintf("unknown<%02x>", p.flags)
 }
 
-// meta returns a pointer to the metadata section of the page.
+// meta returns a pointer to the metadata section of the page.(返回元信息结构体指针，前提：是meta page)
 func (p *page) meta() *meta {
+	// 1.unsafe.Pointer(p)根据指针p的值(地址)，返回一个裸指针，仅代表一个地址，可以转换为指向任意类型的指针
+	// 2.unsafe.Sizeof(*p)获取page类型的大小，相当于pageHeaderSize?
+	// 3.unsafeAdd(base,offset)可以返回base+offset的地址，并将其转换为一个unsafe.Pointer
+	// 4.将unsafe.Pointer转换为*meta返回
 	return (*meta)(unsafeAdd(unsafe.Pointer(p), unsafe.Sizeof(*p)))
 }
 
-// leafPageElement retrieves the leaf node by index
+// leafPageElement retrieves the leaf node by index(根据index返回对应的leaf-page-element指针)
 func (p *page) leafPageElement(index uint16) *leafPageElement {
+	// 1.unsafe.Pointer(p)根据指针p的值(地址)，返回一个裸指针，仅代表一个地址，可以转换为指向任意类型的指针
+	// 2.unsafe.Sizeof(*p)获取page类型的大小，相当于pageHeaderSize?
+	// 3.unsafeIndex(base,offset,elemsz,n)可以返回base+offset+n*elemsz的地址值，
+	//	也就是page-header之后，第index个leaf-page-element的地址，并且转换为一个unsafe.Pointer
+	// 4.将unsafe.Pointer转换为*leafPageElement返回
 	return (*leafPageElement)(unsafeIndex(unsafe.Pointer(p), unsafe.Sizeof(*p),
 		leafPageElementSize, int(index)))
 }

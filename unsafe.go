@@ -10,6 +10,7 @@ func unsafeAdd(base unsafe.Pointer, offset uintptr) unsafe.Pointer {
 }
 
 func unsafeIndex(base unsafe.Pointer, offset uintptr, elemsz uintptr, n int) unsafe.Pointer {
+	//注意这里全都转换为uintptr是因为golang对指针运算的限制，只有转换为uintptr才能进行指针运算
 	return unsafe.Pointer(uintptr(base) + offset + uintptr(n)*elemsz)
 }
 
